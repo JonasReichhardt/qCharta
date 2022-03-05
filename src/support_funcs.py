@@ -37,5 +37,5 @@ def get_layout_description_comment(layout: Layout, dag: DAGCircuit):
 def check_equivalence(qc1: QuantumCircuit, qc2: QuantumCircuit) -> bool:
     config = qcec.Configuration()
     config.transform_dynamic_circuit = True
-    result = qcec.verify(qc, mapped_qc, config)
+    result = qcec.verify(qc1, qc2, config)
     return (result.equivalence == qcec.Equivalence.equivalent)

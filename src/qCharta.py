@@ -15,16 +15,17 @@ class qCharta(TransformationPass):
         self.seed = seed
         random.seed(seed)
 
-    def create_random_layout(self,dag):
+    def create_random_layout(self,qregs):
+        layout_arr = list(range(0,len(qregs)))
+        random.shuffle(layout_arr)
+
+        return Layout.from_intlist(layout_arr,*qregs)
+
+    def run(self, dag):
         reg = QuantumRegister(len(self.coupling_map.physical_qubits) - len(dag.qubits), 'r')
         dag.add_qreg(reg)
 
-        # generate random map with register size
-
-        return 1
-
-    def run(self, dag):
-        self.initial_layout = self.create_random_layout(dag)
+        self.initial_layout = self.create_random_layout(*dag.qregs.values())
 
         new_dag = DAGCircuit()
         for qreg in dag.qregs.values():
@@ -44,11 +45,11 @@ class qCharta(TransformationPass):
 
         if len(self.coupling_map.physical_qubits) != len(self.initial_layout):
             raise TranspilerError(
-                "Mappers require to have the layout to be the same size as the coupling map")
+                "Mappers require to have the layout to be the same size as the coupling map.")
 
         canonical_register = dag.qregs['q']
         trivial_layout = Layout.generate_trivial_layout(canonical_register)
-        current_layout = trivial_layout.copy()
+        current_layout = self.create_random_layout()
 
         for layer in dag.serial_layers():
             subdag = layer['graph']
@@ -82,7 +83,7 @@ class qCharta(TransformationPass):
                     for swap in range(len(path) - 2):
                         current_layout.swap(path[swap], path[swap + 1])
 
-            order = current_layout.reorder_bits(new_dag.qubits)
+            #order = current_layout.reorder_bits(new_dag.qubits)
             new_dag.compose(subdag, qubits=order)
 
         return new_dag

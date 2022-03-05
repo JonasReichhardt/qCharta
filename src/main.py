@@ -1,13 +1,13 @@
-from weakref import ref
+import os
+
 from qiskit import QuantumCircuit, transpile
 from qiskit.test.mock.backends import FakeBrooklyn
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.transpiler import CouplingMap
-from qiskit.dagcircuit import DAGCircuit
-from qiskit.transpiler import Layout
+
 from qCharta import qCharta
-import os
 from coupling import couplingmap_brooklyn
+from support_funcs import get_circuit_cost, get_layout_description_comment, check_equivalence
 
 inputdir = "..\\benchmarks\\"
 outputdir = "..\\mapped\\"
@@ -58,6 +58,12 @@ def do_benchmark(files, ref_benchmark = False):
         mapped_dag = transpiler.run(dag)
         mapped_qc = dag_to_circuit(mapped_dag)
 
+        # check if result is equivalent to original ciruit
+        if check_equivalence(circuit,mapped_qc):
+            print(name +": result = original")
+        else:
+            print(name +": result is not equivalent")
+
         filecontent = mapped_qc.qasm()
         filecontent = filecontent.replace('\n', '\n' + get_layout_description_comment(transpiler.initial_layout, dag) + '\n', 1)
 
@@ -65,36 +71,7 @@ def do_benchmark(files, ref_benchmark = False):
             file.write(filecontent)
         file.close()
 
-        
-
     return [reference_cost,reference_results,own_cost,own_results]
-
-# author: Elias Foramitti
-def get_circuit_cost(qc: QuantumCircuit) -> int:
-    instructions = [i[0] for i in qc]
-    cost = 0
-    for i, inst in enumerate(instructions):
-        if inst.name == 'sx' or inst.name == 'x':
-            cost += 1
-        elif inst.name == 'cx':
-            cost += 10
-        elif inst.name == 'swap':
-            cost += 30
-        elif (inst.name != 'rz' and inst.name != 'measure' and inst.name != 'barrier'):
-            print(f"{i}th instruction '{inst.name}' not allowed")
-    return cost
-
-# author: Elias Foramitti
-def get_layout_description_comment(layout: Layout, dag: DAGCircuit):
-    physical_qbits = []
-    virtual_bit_mapping = layout.get_virtual_bits()
-    # one could directly take layout.get_virtual_bits().values(), 
-    # but that would not necessarily preserve the original ordering 
-    # of virtual qubits resulting in a wrong layout description
-    for qreg in dag.qregs.values():
-        for qbit in qreg:
-            physical_qbits.append(virtual_bit_mapping[qbit])
-    return '// i ' + ' '.join(str(i) for i in physical_qbits)
 
 if __name__=="__main__":
     main()

@@ -12,6 +12,8 @@ from support_funcs import get_circuit_cost, get_layout_description_comment, chec
 inputdir = "..\\benchmarks\\"
 outputdir = "..\\mapped\\"
 
+seed = 100
+
 def main():
     # get all qasm files of directory
     files = os.listdir(inputdir)
@@ -51,7 +53,7 @@ def do_benchmark(files, ref_benchmark = False):
         coupling_map = CouplingMap(couplingmap_brooklyn)
 
         # create transpiler with coupling map
-        transpiler = qCharta(coupling_map,100)
+        transpiler = qCharta(coupling_map, seed)
         
         # convert circuit to dag, transpile and convert back
         dag = circuit_to_dag(circuit)

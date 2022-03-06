@@ -1,7 +1,8 @@
 from qiskit.transpiler.basepasses import TransformationPass
-from qiskit.transpiler import Layout, TranspilerError
+from qiskit.transpiler import Layout
 from qiskit.circuit.library import SwapGate
-from qiskit.dagcircuit import DAGCircuit
+from qiskit.dagcircuit import DAGOpNode
+from qiskit.circuit.library import SwapGate
 from qiskit import QuantumRegister
 import random
 
@@ -13,77 +14,119 @@ class qCharta(TransformationPass):
         super().__init__()
         self.coupling_map = coupling_map
         self.seed = seed
+        self.initial_mapping: Layout
         random.seed(seed)
 
-    def create_random_layout(self,qregs):
-        layout_arr = list(range(0,len(qregs)))
-        random.shuffle(layout_arr)
+    def create_random_layout(self,dag):
+        nr_qbits = len(self.coupling_map.physical_qubits)
 
-        return Layout.from_intlist(layout_arr,*qregs)
+        layout_arr = list(range(0,nr_qbits))
+        random.shuffle(layout_arr)
+        layout = Layout.from_intlist(layout_arr,*dag.qregs.values())
+
+        return layout
 
     def run(self, dag):
         reg = QuantumRegister(len(self.coupling_map.physical_qubits) - len(dag.qubits), 'r')
         dag.add_qreg(reg)
 
-        self.initial_layout = self.create_random_layout(*dag.qregs.values())
+        init_layout = self.create_random_layout(dag)
+        #init_layout = Layout.generate_trivial_layout(*dag.qregs.values())
+        self.initial_layout = init_layout.copy()
+    
+        return self.sabre_swap(dag.front_layer(), init_layout, dag, self.coupling_map)[0]
 
-        new_dag = DAGCircuit()
-        for qreg in dag.qregs.values():
-            new_dag.add_qreg(qreg)
-        for creg in dag.cregs.values():
-            new_dag.add_creg(creg)
+    
+    # returns true if gate is a one-qubit-gate or its two qubits are connected
+    def qubits_connected(self, gate, coupling_graph, layout):
+        return len(gate.qargs) == 1 or coupling_graph.graph.has_edge(
+            layout._v2p[gate.qargs[0]], layout._v2p[gate.qargs[1]]
+        )
+    
+    # search for indizes of all possible swaps
+    def optain_swaps(self, front_layer, layout, coupling_graph):
+        swaps = []
+        # iterate over all neighbours of gates referenced in the front-layer
+        for gate in front_layer:
+            for qubit in gate.qargs:
+                # add all neighbors to possible swap list
+                for n in coupling_graph.neighbors(layout[qubit]):
+                    # swap possible if distance is 1
+                    swaps.append({'q1': qubit, 'q2': layout[n], 'gate': gate})
 
-
-        if self.initial_layout is None:
-            if self.property_set["layout"]:
-                self.initial_layout = self.property_set["layout"]
+        return swaps
+    
+    # calculate the cumulative distance between all elements of the front layer and their successors after a
+    # potential swap
+    def calc_swap_score(self, swap, layout, front_layer, coupling_graph):
+        layout.swap(swap['q1'], swap['q2'])
+        distance = 0
+        # take all gates of the front layer into account
+        for gate in front_layer:
+            if gate == swap['gate']:
+                distance += coupling_graph.distance_matrix[layout[gate.qargs[0]]][layout[gate.qargs[1]]]
             else:
-                self.initial_layout = Layout.generate_trivial_layout(*dag.qregs.values())
+                distance += coupling_graph.distance_matrix[layout[gate.qargs[0]]][layout[gate.qargs[1]]]
+        return distance
+    
+    def sabre_swap(self, front_layer, layout, dag, coupling_graph):
+        executed_gates = []
+        # generate new DAG based on the present structure
+        # we iterate through all gates and sequentially add them to the new dag but with swaps
+        new_dag = dag._copy_circuit_metadata()
 
-        if len(dag.qubits) != len(self.initial_layout):
-            raise TranspilerError('The layout does not match the amount of qubits in the DAG')
+        # iterate until no gates are left to execute
+        # gates in the front_layer do not have any dependencies on other previous gates
+        while front_layer:
+            execute_gate_list = []
+            # mark all gates that can be executed (I.e. all gates that are in the front layer)
+            for fg in front_layer:
+                # execute gate if qubits are neighbours
+                if self.qubits_connected(fg, coupling_graph, layout):
+                    execute_gate_list.append(fg)
 
-        if len(self.coupling_map.physical_qubits) != len(self.initial_layout):
-            raise TranspilerError(
-                "Mappers require to have the layout to be the same size as the coupling map.")
+            if execute_gate_list:
+                for gate in execute_gate_list:
+                    # add gate to new dag
+                    # dag.qubits = physical qubits
+                    # layout._v2p = virtual to physical mapping of current layout
+                    # x = virtual qubit
+                    new_dag.apply_operation_back(op=gate.op,
+                                                 qargs=list(map(lambda x: dag.qubits[layout._v2p[x]], gate.qargs)),
+                                                 cargs=gate.cargs)
+                    # remove executed gates
+                    front_layer.remove(gate)
+                    executed_gates.append(gate)
+                    # iterate over successors and check if dependencies are resolved
+                    # if so add them to the front layer as they are ready for execution
+                    # filter by instance of: ignore DAGInNodes and DAGOutNodes (they count as predecessors/successors)
+                    for succ in list(filter(lambda s: isinstance(s, DAGOpNode), dag.successors(gate))):
+                        preds = list(filter(lambda p: isinstance(p, DAGOpNode), dag.predecessors(succ)))
 
-        canonical_register = dag.qregs['q']
-        trivial_layout = Layout.generate_trivial_layout(canonical_register)
-        current_layout = self.create_random_layout()
+                        # only add the successor-element to the front-layer if all its predecessors were already executed
+                        if set(preds).issubset(executed_gates):
+                            front_layer.append(succ)
 
-        for layer in dag.serial_layers():
-            subdag = layer['graph']
+            # swap bits if nothing can be executed
+            else:
+                score = []
 
-            for gate in subdag.two_qubit_ops():
-                physical_q0 = current_layout[gate.qargs[0]]
-                physical_q1 = current_layout[gate.qargs[1]]
-                if self.coupling_map.distance(physical_q0, physical_q1) != 1:
-                    # Insert a new layer with the SWAP(s).
-                    swap_layer = DAGCircuit()
-                    swap_layer.add_qreg(canonical_register)
+                # obtain all possible swaps and their score based on a heuristic
+                for swap in self.optain_swaps(front_layer, layout, coupling_graph):
+                    score.append(
+                        {'op': swap,
+                         'distance': self.calc_swap_score(swap, layout.copy(), front_layer, coupling_graph)})
 
-                    path = self.coupling_map.shortest_undirected_path(physical_q0, physical_q1)
-                    for swap in range(len(path) - 2):
-                        connected_wire_1 = path[swap]
-                        connected_wire_2 = path[swap + 1]
-
-                        qubit_1 = current_layout[connected_wire_1]
-                        qubit_2 = current_layout[connected_wire_2]
-
-                        # create the swap operation
-                        swap_layer.apply_operation_back(SwapGate(),
-                                                        qargs=[qubit_1, qubit_2],
-                                                        cargs=[])
-
-                    # layer insertion
-                    order = current_layout.reorder_bits(new_dag.qubits)
-                    new_dag.compose(swap_layer, qubits=order)
-
-                    # update current_layout
-                    for swap in range(len(path) - 2):
-                        current_layout.swap(path[swap], path[swap + 1])
-
-            #order = current_layout.reorder_bits(new_dag.qubits)
-            new_dag.compose(subdag, qubits=order)
-
-        return new_dag
+                # chose the swap action with the minimal distance (score) after the gates switched position
+                min_swap = min(score, key=lambda s: s['distance'])['op']
+                # get physical bits by index of logical bit
+                swap_node = DAGOpNode(op=SwapGate(), qargs=[
+                    dag.qubits[layout._v2p[min_swap['q1']]],
+                    dag.qubits[layout._v2p[min_swap['q2']]]
+                ])
+                # add a swap to the new dag
+                new_dag.apply_operation_back(swap_node.op, swap_node.qargs, swap_node.cargs)
+                # swap logical bits
+                layout.swap(min_swap['q1'], min_swap['q2'])
+            
+        return new_dag, layout

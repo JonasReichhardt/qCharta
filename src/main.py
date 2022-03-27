@@ -6,7 +6,7 @@ from qiskit.transpiler import CouplingMap, PassManager
 import os
 from qCharta import qCharta
 from sabre import Sabre
-from coupling import couplingmap_brooklyn, coupling
+from coupling import coupling
 from support_funcs import get_circuit_cost, get_layout_description_comment, check_equivalence
 
 inputdir = "..\\benchmarks\\"
@@ -25,42 +25,38 @@ def main():
         quantum_circuits[filename]=QuantumCircuit.from_qasm_file(path=inputdir+filename)
 
     mean = 0
+    lastRun = []
 
-    for i in range(100):
-        result = do_benchmark(quantum_circuits)
+    for i in range(25):
+        result = qCharta_benchmark(quantum_circuits)
 
-        #print("Cost of reference implementation: "+str(result[0]))
-        #print("Cost of own implementation: "+str(result[2]))
-        print(result[2])
-        mean = mean + result[2]
+        lastCost = result[1]
+        mean = mean + lastCost
     
-    print(mean/100)
+    print("mean over 25 runs:"+str(mean/25))
 
-def do_benchmark(quantum_circuits, ref_benchmark = False, check_eq = False):
+def reference_benchmark(quantum_circuits):
     reference_results = []
-    own_results = []
     reference_cost = 0
+
+    for name, circuit in quantum_circuits.items():
+        transpiled = transpile(circuit, coupling_map=coupling_map,routing_method="basic")
+
+        cost = get_circuit_cost(transpiled)
+        reference_results.append(cost)
+        reference_cost = reference_cost+cost
+            
+        transpiled.qasm(filename=outputdir+"reference\\"+name)
+    
+    return [reference_cost,reference_results]
+    
+def qCharta_benchmark(quantum_circuits, check_eq = False):
+    own_results = []
     own_cost = 0
 
-    if ref_benchmark:
-        print("[Step 2: transpile trivial mapping with basic swaps]")
-        for name, circuit in quantum_circuits.items():
-            print("---"+name)
-            transpiled = transpile(circuit, backend=FakeBrooklyn(),routing_method="basic")
-
-            cost = get_circuit_cost(transpiled)
-            reference_results.append(cost)
-            reference_cost = reference_cost+cost
-
-            print("cost: "+str(cost))
-            
-            transpiled.qasm(filename=outputdir+"reference\\"+name)
-    
-    #print("[Step 3: transpile with qCharta]")
     for name, circuit in quantum_circuits.items():
-        #print("---"+name)
         # create transpiler with coupling map
-        transpiler = qCharta(coupling_map, seed)
+        transpiler = qCharta(coupling_map, seed, "heuristic")
 
         # create pass manager and append transformation pass
         pass_manager = PassManager()
@@ -72,8 +68,6 @@ def do_benchmark(quantum_circuits, ref_benchmark = False, check_eq = False):
         cost = get_circuit_cost(mapped_qc)
         own_results.append(cost)
         own_cost = own_cost+cost
-
-        #print("cost: "+str(cost))
 
         if check_eq:
             # check if result is equivalent to original ciruit
@@ -89,7 +83,27 @@ def do_benchmark(quantum_circuits, ref_benchmark = False, check_eq = False):
             file.write(filecontent)
         file.close()
 
-    return [reference_cost,reference_results,own_cost,own_results]
+    return [own_cost,own_results]
+
+def sabre_benchmark(quantum_circuits, mapping_strategy):
+    results = []
+    sum_cost = 0
+    
+    for name, circuit in quantum_circuits.items():
+        transpiler = Sabre(coupling_map, layout_strategy=mapping_strategy)
+        
+        # create pass manager and append transformation pass
+        pass_manager = PassManager()
+        pass_manager.append(transpiler)
+
+        # run transformation pass
+        mapped_qc = pass_manager.run(circuit)
+
+        cost = get_circuit_cost(mapped_qc)
+        results.append(cost)
+        sum_cost = sum_cost+cost
+    
+    return [sum_cost,results]   
 
 if __name__=="__main__":
     main()

@@ -29,15 +29,33 @@ class qCharta(TransformationPass):
         return layout
 
     def create_heuristic_layout(self,dag):
-        neighbor_count = []
-        for qbit in self.coupling_map.physical_qubits:
-            neighbor_count.append(len(self.coupling_map.neighbors(qbit)))
+        analysis = self.gate_analysis(dag)
 
+        # place most used node in the center
+        layout_dict = dict.fromkeys(range(0,len(self.coupling_map.physical_qubits)))
+        layout_dict[31] = analysis[0][0]
+
+        distance = 1
+        position = 0
+        for qbit in dag.qubits:
+            candidates = distance_dict[distance]
+            if layout_dict[candidates[position]] is None:
+                layout_dict[candidates[position]] = qbit
+                position = position+1
+                if len(candidates) == position:
+                    position = 0
+                    distance = distance+1
+                    if len(distance_dict.items()) == distance:
+                        break
+
+        return Layout(layout_dict)
+
+    def gate_analysis(self, dag):
         # analyse the circuit to indentify the most used logical qbit 
         analysis = {}
         for gate in dag.two_qubit_ops():
-            qbit1 = gate.qargs[0].index
-            qbit2 = gate.qargs[1].index
+            qbit1 = gate.qargs[0]
+            qbit2 = gate.qargs[1]
             try:
                 analysis[qbit1] = analysis[qbit1]+1
             except KeyError:
@@ -47,13 +65,13 @@ class qCharta(TransformationPass):
                 analysis[qbit2] = analysis[qbit2]+1
             except KeyError:
                 analysis[qbit2] = 1
-        
-        sorted_logical_qbits = sorted(analysis.items(), key=lambda x: x[1],reverse=True)
-        
-        for distance, dist_values in distance_dict.items():
-            print(dist_values)
-        #self.hotspot_anaysis(dag, analysis)
 
+        # sort qbits by usage in 2 qbit operations
+        sorted_logical_qbits = sorted(analysis.items(), key=lambda x: x[1],reverse=True)
+
+        return sorted_logical_qbits
+
+    # not sure if this function will be needed 
     def hotspot_anaysis(self, dag, analysis):
         hot_qbit = max(analysis, key=analysis.get)
         hot_gates = {}
@@ -68,9 +86,7 @@ class qCharta(TransformationPass):
                     hot_gates[gate.qargs[0].index] = hot_gates[gate.qargs[0].index]+1
                 except KeyError:
                     hot_gates[gate.qargs[0].index] = 1
-        print(hot_qbit)
-        print(hot_gates)
-        print(analysis)
+        return hot_qbit, hot_gates
 
     def run(self, dag):
         # filll up a "reserve" register
@@ -80,8 +96,9 @@ class qCharta(TransformationPass):
         if self.layout_option == 'trivial':
             init_layout = Layout.generate_trivial_layout(*dag.qregs.values())
         elif self.layout_option == 'random':
-            init_layout = Layout.generate_random_layout(dag)
+            init_layout = self.create_random_layout(dag)
         elif self.layout_option == 'heuristic':
+            init_layout = self.create_random_layout(dag)
             init_layout = self.create_heuristic_layout(dag)
         
         self.initial_layout = init_layout.copy()
